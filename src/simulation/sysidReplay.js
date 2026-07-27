@@ -184,7 +184,7 @@ export class SysIDReplayController {
 
     simulation.forward();
     this.frameIndex = clamped;
-    this._syncVisualState();
+    this.syncVisualState();
     return this.playbackState();
   }
 
@@ -211,7 +211,7 @@ export class SysIDReplayController {
     };
   }
 
-  _syncVisualState() {
+  syncVisualState() {
     const { demo } = this;
     if (!demo.model || !demo.simulation) {
       return;
