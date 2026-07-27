@@ -53,6 +53,21 @@ function fallbackRows(frameCount, row) {
   return Array.from({ length: frameCount }, () => Float32Array.from(row));
 }
 
+function normalizeQuaternionRows(rows) {
+  return rows.map((row, index) => {
+    const norm = Math.hypot(row[0], row[1], row[2], row[3]);
+    if (!Number.isFinite(norm) || norm <= 1e-8) {
+      throw new Error(`root_quat[${index}] has zero or invalid magnitude`);
+    }
+    return Float32Array.from([
+      row[0] / norm,
+      row[1] / norm,
+      row[2] / norm,
+      row[3] / norm
+    ]);
+  });
+}
+
 export function normalizeSysIDClip(payload) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     throw new Error('SysID replay clip must be a JSON object');
@@ -65,9 +80,11 @@ export function normalizeSysIDClip(payload) {
   const rootPos = rootPosRaw
     ? readRows(rootPosRaw, 3, 'root_pos')
     : fallbackRows(frameCount, [0.0, 0.0, 0.78]);
-  const rootQuat = rootQuatRaw
-    ? readRows(rootQuatRaw, 4, 'root_quat')
-    : fallbackRows(frameCount, [1.0, 0.0, 0.0, 0.0]);
+  const rootQuat = normalizeQuaternionRows(
+    rootQuatRaw
+      ? readRows(rootQuatRaw, 4, 'root_quat')
+      : fallbackRows(frameCount, [1.0, 0.0, 0.0, 0.0])
+  );
 
   if (rootPos.length !== frameCount || rootQuat.length !== frameCount) {
     throw new Error('joint_pos, root_pos and root_quat must contain the same number of frames');
@@ -117,15 +134,16 @@ export class SysIDReplayController {
   }
 
   _resolveJointQposAddresses(jointNames) {
-    const { mujoco, model } = this.demo;
-    if (!mujoco || !model) {
-      throw new Error('MuJoCo scene is not ready');
+    const model = this.demo.model;
+    const modelJointNames = this.demo.jointNamesMJC ?? [];
+    if (!model || modelJointNames.length === 0) {
+      throw new Error('MuJoCo scene joint metadata is not ready');
     }
 
     return jointNames.map((name) => {
       const candidates = name.endsWith('_joint') ? [name] : [`${name}_joint`, name];
       for (const candidate of candidates) {
-        const jointId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, candidate);
+        const jointId = modelJointNames.indexOf(candidate);
         if (jointId >= 0) {
           return Number(model.jnt_qposadr[jointId]);
         }
