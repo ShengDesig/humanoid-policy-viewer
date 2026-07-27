@@ -86,28 +86,37 @@
     <v-card title="Loading G1 MuJoCo scene">
       <v-card-text>
         <v-progress-linear indeterminate color="primary"></v-progress-linear>
-        <div class="mt-3">Loading MuJoCo WebAssembly and G1 assets. No ONNX policy is loaded.</div>
+        <div class="mt-3">{{ loadingLabel }}</div>
       </v-card-text>
     </v-card>
   </v-dialog>
 
   <v-dialog :model-value="state < 0" persistent max-width="600px">
     <v-card title="SysID replay loading error">
-      <v-card-text>{{ errorMessage }}</v-card-text>
+      <v-card-text>
+        <div>{{ errorMessage }}</div>
+        <div class="mt-3 text-caption">
+          Initialization stage: {{ initStage || 'unknown' }}
+        </div>
+      </v-card-text>
+      <v-card-actions>
+        <v-btn color="primary" block @click="reloadPage">Reload page</v-btn>
+      </v-card-actions>
     </v-card>
   </v-dialog>
 </template>
 
 <script>
-import loadMujoco from 'mujoco-js';
 import { MuJoCoDemo } from '@/simulation/main.js';
 import { downloadExampleScenesFolder } from '@/simulation/mujocoUtils.js';
+import { loadMujocoSingleton } from '@/simulation/mujocoSingleton.js';
 import { SysIDReplayController } from '@/simulation/sysidReplay.js';
 
 export default {
   name: 'SysIDReplayPage',
   data: () => ({
     state: 0,
+    initStage: 'starting',
     errorMessage: '',
     demo: null,
     controller: null,
@@ -143,6 +152,17 @@ export default {
     sourceLabel() {
       const metadata = this.playback.metadata ?? {};
       return metadata.source_series ?? metadata.source_path ?? 'exported motion JSON';
+    },
+    loadingLabel() {
+      const labels = {
+        starting: 'Preparing SysID replay.',
+        wasm: 'Loading the singleton MuJoCo WebAssembly module.',
+        demo: 'Creating the G1 viewer.',
+        assets: 'Loading G1 MJCF and mesh assets.',
+        scene: 'Compiling the G1 MuJoCo scene.',
+        controller: 'Preparing direct recorded-state playback.'
+      };
+      return labels[this.initStage] ?? 'Loading MuJoCo WebAssembly and G1 assets. No ONNX policy is loaded.';
     }
   },
   methods: {
@@ -154,20 +174,37 @@ export default {
       }
 
       try {
-        const mujoco = await loadMujoco();
+        this.initStage = 'wasm';
+        const mujoco = await loadMujocoSingleton();
+
+        this.initStage = 'demo';
         this.demo = new MuJoCoDemo(mujoco);
+
+        this.initStage = 'assets';
         await downloadExampleScenesFolder(mujoco);
+
+        this.initStage = 'scene';
         await this.demo.reloadScene('g1/g1.xml');
         this.demo.updateFollowBodyId();
         this.demo.params.paused = true;
         this.demo.alive = false;
+
+        this.initStage = 'controller';
         this.controller = new SysIDReplayController(this.demo);
+        this.demo.simulation.forward();
+        this.controller.syncVisualState();
+
+        this.initStage = 'ready';
         this.state = 1;
       } catch (error) {
-        console.error('Failed to initialize SysID replay:', error);
+        console.error(`Failed to initialize SysID replay at ${this.initStage}:`, error);
         this.state = -1;
-        this.errorMessage = error?.toString?.() ?? String(error);
+        const message = error?.toString?.() ?? String(error);
+        this.errorMessage = `${message}`;
       }
+    },
+    reloadPage() {
+      window.location.reload();
     },
     async onMotionFile(files) {
       const fileList = Array.isArray(files)
