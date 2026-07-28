@@ -35,13 +35,16 @@ export default defineConfig({
     }),
   ],
   optimizeDeps: {
-    exclude: ['vuetify', 'onnxruntime-web'],
+    // mujoco-js owns Embind wrapper classes. Pre-bundling a second copy can
+    // make MjModel and MjData wrappers fail same-name instance checks.
+    exclude: ['vuetify', 'onnxruntime-web', 'mujoco-js'],
   },
   define: { 'process.env': {} },
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
+    dedupe: ['mujoco-js'],
     extensions: [
       '.js',
       '.json',
