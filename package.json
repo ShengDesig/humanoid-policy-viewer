@@ -15,6 +15,7 @@
     "chart.js": "^4.4.9",
     "katex": "^0.13.24",
     "mathjax-vue3": "^1.0.1",
+    "mujoco-js": "0.0.7",
     "onnxruntime-web": "^1.21.1",
     "three": "0.151.3",
     "vatex": "^0.1.0",
