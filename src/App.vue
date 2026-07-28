@@ -1,8 +1,7 @@
 <template>
   <v-app>
     <v-main>
-      <SysIDReplay v-if="mode === 'sysid'" />
-      <Demo v-else />
+      <ActivePage />
 
       <div class="mode-switch">
         <v-btn
@@ -27,19 +26,27 @@
 </template>
 
 <script>
-import Demo from '@/views/Demo.vue'
-import SysIDReplay from '@/views/SysIDReplay.vue'
+import { defineAsyncComponent } from 'vue'
+
+const requestedMode = new URLSearchParams(window.location.search).get('mode') === 'sysid'
+  ? 'sysid'
+  : 'policy'
+
+// Keep the two MuJoCo entry points in separate async chunks.  The policy page
+// historically imports mujoco-js directly, while SysID replay owns a singleton
+// module instance.  Statically importing both pages can make Vite evaluate two
+// Embind module paths on one page, which invalidates MjModel/MjData wrappers.
+const ActivePage = requestedMode === 'sysid'
+  ? defineAsyncComponent(() => import('@/views/SysIDReplay.vue'))
+  : defineAsyncComponent(() => import('@/views/Demo.vue'))
 
 export default {
   name: 'App',
   components: {
-    Demo,
-    SysIDReplay
+    ActivePage
   },
   data: () => ({
-    mode: new URLSearchParams(window.location.search).get('mode') === 'sysid'
-      ? 'sysid'
-      : 'policy'
+    mode: requestedMode
   })
 }
 </script>
