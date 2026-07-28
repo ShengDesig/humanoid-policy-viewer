@@ -1,0 +1,51 @@
+name: Windows portable package
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'public/**'
+      - 'scripts/package-windows-portable.ps1'
+      - 'scripts/portable-server.mjs'
+      - 'package.json'
+      - 'vite.config.mjs'
+      - '.github/workflows/windows-portable-package.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Build portable ZIP
+        shell: powershell
+        run: |
+          .\scripts\package-windows-portable.ps1 -OutputRoot .\artifacts
+
+      - name: Verify package
+        shell: powershell
+        run: |
+          $Zip = Get-Item .\artifacts\G1-SysID-Viewer-Windows-x64.zip
+          Write-Host "ZIP=$($Zip.FullName)"
+          Write-Host "SIZE=$($Zip.Length)"
+          if ($Zip.Length -lt 1000000) { throw "Portable ZIP is unexpectedly small" }
+
+      - name: Upload portable viewer
+        uses: actions/upload-artifact@v4
+        with:
+          name: G1-SysID-Viewer-Windows-x64
+          path: artifacts/G1-SysID-Viewer-Windows-x64.zip
+          if-no-files-found: error
+          retention-days: 14
