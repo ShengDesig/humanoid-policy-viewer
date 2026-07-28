@@ -2,8 +2,11 @@ import loadMujoco from '@mujoco/mujoco';
 
 const PROMISE_KEY = '__HUMANOID_POLICY_VIEWER_MUJOCO_PROMISE__';
 const INSTANCE_KEY = '__HUMANOID_POLICY_VIEWER_MUJOCO_INSTANCE__';
+const ARGUMENT_PATCH_KEY = '__HUMANOID_POLICY_VIEWER_MODEL_ARGUMENT_PATCH__';
 
-const LEGACY_NUMBER_FIELDS = [
+const RAW_MODEL_BY_VIEW = new WeakMap();
+
+const LEGACY_NUMBER_FIELDS = new Set([
   // Model sizes used as JavaScript loop bounds.
   'nq', 'nv', 'nbody', 'njnt', 'ngeom', 'nlight', 'nu',
 
@@ -23,14 +26,12 @@ const LEGACY_NUMBER_FIELDS = [
 
   // Tendon rendering address tables.
   'ten_wrapadr', 'ten_wrapnum'
-];
+]);
 
-// The canonical bindings currently expose this model field as
-// emscripten::memory_view<bool>.  Accessing its generated getter in JavaScript
-// throws `_emval_take_value has unknown type ... memory_view<bool>`.  The
-// renderer already has a safe fallback when the field is absent/falsy, so
-// shadow the unsupported getter without reading it.
-const UNSUPPORTED_BOOL_VIEW_FIELDS = ['light_castshadow'];
+// The canonical bindings expose this field as emscripten::memory_view<bool> on
+// some builds. Reading the generated getter throws before JavaScript can use
+// the value. The renderer already has a safe fallback when this field is null.
+const UNSUPPORTED_BOOL_VIEW_FIELDS = new Set(['light_castshadow']);
 
 function readUtf8File(fs, path) {
   const value = fs.readFile(path, { encoding: 'utf8' });
@@ -57,62 +58,90 @@ function numberCompatibleValue(value) {
   return value;
 }
 
-function maskUnsupportedMemoryViews(model) {
-  for (const field of UNSUPPORTED_BOOL_VIEW_FIELDS) {
-    try {
-      Object.defineProperty(model, field, {
-        configurable: true,
-        enumerable: false,
-        writable: false,
-        value: null
-      });
-    } catch (error) {
-      throw new Error(
-        `Unable to mask unsupported MjModel.${field} memory view: ${error}`
-      );
-    }
-  }
-  return model;
+function unwrapModel(model) {
+  return RAW_MODEL_BY_VIEW.get(model) ?? model;
 }
 
 /**
- * The canonical MuJoCo bindings expose address-sized C fields as BigInt values
- * on some browser/OS combinations.  The upstream viewer predates those
- * bindings and performs normal Number arithmetic on mesh, texture and name
- * addresses.  Shadow only the fields consumed by the JavaScript renderer with
- * Number-compatible values while retaining the original Embind MjModel object
- * for MjData construction and MuJoCo C API calls.
+ * Return a JavaScript-only view of an Embind MjModel.
+ *
+ * The Proxy is never passed into MuJoCo constructors or C API functions. It
+ * only adapts fields read by the legacy Three.js renderer. Function members
+ * are bound back to the raw model so calls such as model.delete() remain valid.
  */
-function installLegacyModelNumberViews(model) {
-  maskUnsupportedMemoryViews(model);
+function createLegacyModelView(model) {
+  const convertedFields = new Map();
 
-  for (const field of LEGACY_NUMBER_FIELDS) {
-    let original;
-    try {
-      original = model[field];
-    } catch {
-      continue;
-    }
+  const view = new Proxy(model, {
+    get(target, property) {
+      if (UNSUPPORTED_BOOL_VIEW_FIELDS.has(property)) {
+        return null;
+      }
 
-    const compatible = numberCompatibleValue(original);
-    if (compatible === original) {
-      continue;
-    }
+      if (LEGACY_NUMBER_FIELDS.has(property)) {
+        if (!convertedFields.has(property)) {
+          const original = Reflect.get(target, property, target);
+          convertedFields.set(property, numberCompatibleValue(original));
+        }
+        return convertedFields.get(property);
+      }
 
-    try {
-      Object.defineProperty(model, field, {
-        configurable: true,
-        enumerable: false,
-        writable: false,
-        value: compatible
-      });
-    } catch (error) {
-      throw new Error(
-        `Unable to install Number compatibility for MjModel.${field}: ${error}`
-      );
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
     }
+  });
+
+  RAW_MODEL_BY_VIEW.set(view, model);
+  return view;
+}
+
+/**
+ * Ensure all MuJoCo entry points receive the raw Embind model even when the
+ * viewer holds a renderer Proxy. This preserves exact MjModel class identity.
+ */
+function installModelArgumentCompatibility(mujoco) {
+  if (mujoco[ARGUMENT_PATCH_KEY]) {
+    return;
   }
-  return model;
+
+  const NativeMjData = mujoco.MjData;
+  if (typeof NativeMjData !== 'function') {
+    throw new Error('MuJoCo MjData constructor is unavailable');
+  }
+
+  function CompatibleMjData(model, ...args) {
+    return new NativeMjData(unwrapModel(model), ...args);
+  }
+  Object.setPrototypeOf(CompatibleMjData, NativeMjData);
+  CompatibleMjData.prototype = NativeMjData.prototype;
+
+  Object.defineProperty(mujoco, 'MjData', {
+    configurable: true,
+    enumerable: true,
+    writable: false,
+    value: CompatibleMjData
+  });
+
+  for (const functionName of ['mj_step', 'mj_resetData', 'mj_forward', 'mj_applyFT']) {
+    const nativeFunction = mujoco[functionName];
+    if (typeof nativeFunction !== 'function') {
+      continue;
+    }
+
+    Object.defineProperty(mujoco, functionName, {
+      configurable: true,
+      enumerable: true,
+      writable: false,
+      value: (model, ...args) => nativeFunction(unwrapModel(model), ...args)
+    });
+  }
+
+  Object.defineProperty(mujoco, ARGUMENT_PATCH_KEY, {
+    configurable: false,
+    enumerable: false,
+    writable: false,
+    value: true
+  });
 }
 
 /**
@@ -155,11 +184,11 @@ function installModelLoaderCompatibility(mujoco) {
       try {
         mujoco.FS.chdir(directory);
         const xml = readUtf8File(mujoco.FS, filename);
-        const model = mujoco.MjModel.from_xml_string(xml);
-        if (!model) {
+        const rawModel = mujoco.MjModel.from_xml_string(xml);
+        if (!rawModel) {
           throw new Error(`MuJoCo failed to compile MJCF: ${path}`);
         }
-        return installLegacyModelNumberViews(model);
+        return createLegacyModelView(rawModel);
       } finally {
         mujoco.FS.chdir(previousDirectory);
       }
@@ -169,12 +198,10 @@ function installModelLoaderCompatibility(mujoco) {
 
 /**
  * Return one MuJoCo Emscripten module per browser page.
- *
- * Embind wrapper objects are owned by the module instance that created them.
- * Passing wrappers across module instances produces same-name BindingErrors.
  */
 export async function loadMujocoSingleton() {
   if (globalThis[INSTANCE_KEY]) {
+    installModelArgumentCompatibility(globalThis[INSTANCE_KEY]);
     installModelLoaderCompatibility(globalThis[INSTANCE_KEY]);
     return globalThis[INSTANCE_KEY];
   }
@@ -182,6 +209,7 @@ export async function loadMujocoSingleton() {
   if (!globalThis[PROMISE_KEY]) {
     globalThis[PROMISE_KEY] = loadMujoco()
       .then((instance) => {
+        installModelArgumentCompatibility(instance);
         installModelLoaderCompatibility(instance);
         globalThis[INSTANCE_KEY] = instance;
         return instance;
