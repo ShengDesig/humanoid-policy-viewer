@@ -35,16 +35,16 @@ export default defineConfig({
     }),
   ],
   optimizeDeps: {
-    // mujoco-js owns Embind wrapper classes. Pre-bundling a second copy can
-    // make MjModel and MjData wrappers fail same-name instance checks.
-    exclude: ['vuetify', 'onnxruntime-web', 'mujoco-js'],
+    // Keep both MuJoCo WASM packages out of Vite pre-bundling. Policy mode
+    // remains on the legacy package while SysID replay uses @mujoco/mujoco.
+    exclude: ['vuetify', 'onnxruntime-web', 'mujoco-js', '@mujoco/mujoco'],
   },
   define: { 'process.env': {} },
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
-    dedupe: ['mujoco-js'],
+    dedupe: ['mujoco-js', '@mujoco/mujoco'],
     extensions: [
       '.js',
       '.json',
