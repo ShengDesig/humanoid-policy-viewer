@@ -82,10 +82,14 @@
     </v-card>
   </div>
 
-  <v-dialog :model-value="state === 0" persistent max-width="560px">
+  <v-dialog :model-value="state === 0" persistent max-width="640px">
     <v-card title="Loading G1 MuJoCo scene">
       <v-card-text>
-        <v-progress-linear indeterminate color="primary"></v-progress-linear>
+        <v-progress-linear
+          :indeterminate="initStage !== 'assets' || assetProgress.total === 0"
+          :model-value="assetProgressPercent"
+          color="primary"
+        ></v-progress-linear>
         <div class="mt-3">{{ loadingLabel }}</div>
       </v-card-text>
     </v-card>
@@ -108,9 +112,9 @@
 
 <script>
 import { MuJoCoDemo } from '@/simulation/main.js';
-import { downloadExampleScenesFolder } from '@/simulation/mujocoUtils.js';
 import { loadMujocoSingleton } from '@/simulation/mujocoSingleton.js';
 import { SysIDReplayController } from '@/simulation/sysidReplay.js';
+import { downloadSysIDSceneAssets } from '@/simulation/sysidAssetLoader.js';
 
 export default {
   name: 'SysIDReplayPage',
@@ -128,6 +132,11 @@ export default {
     playStartMs: 0,
     playStartFrame: 0,
     playbackSpeed: 1,
+    assetProgress: {
+      completed: 0,
+      total: 0,
+      currentFile: ''
+    },
     speedItems: [
       { title: '0.25×', value: 0.25 },
       { title: '0.5×', value: 0.5 },
@@ -153,12 +162,25 @@ export default {
       const metadata = this.playback.metadata ?? {};
       return metadata.source_series ?? metadata.source_path ?? 'exported motion JSON';
     },
+    assetProgressPercent() {
+      if (!this.assetProgress.total) {
+        return 0;
+      }
+      return Math.min(100, (this.assetProgress.completed / this.assetProgress.total) * 100);
+    },
     loadingLabel() {
+      if (this.initStage === 'assets' && this.assetProgress.total > 0) {
+        const current = this.assetProgress.currentFile
+          ? ` — ${this.assetProgress.currentFile}`
+          : '';
+        return `Loading G1 assets ${this.assetProgress.completed}/${this.assetProgress.total}${current}`;
+      }
+
       const labels = {
         starting: 'Preparing SysID replay.',
         wasm: 'Loading the singleton MuJoCo WebAssembly module.',
         demo: 'Creating the G1 viewer.',
-        assets: 'Loading G1 MJCF and mesh assets.',
+        assets: 'Reading the G1 scene asset manifest.',
         scene: 'Compiling the G1 MuJoCo scene.',
         controller: 'Preparing direct recorded-state playback.'
       };
@@ -181,7 +203,14 @@ export default {
         this.demo = new MuJoCoDemo(mujoco);
 
         this.initStage = 'assets';
-        await downloadExampleScenesFolder(mujoco);
+        this.assetProgress = { completed: 0, total: 0, currentFile: '' };
+        await downloadSysIDSceneAssets(mujoco, {
+          concurrency: 4,
+          timeoutMs: 60000,
+          onProgress: (progress) => {
+            this.assetProgress = { ...progress };
+          }
+        });
 
         this.initStage = 'scene';
         await this.demo.reloadScene('g1/g1.xml');
