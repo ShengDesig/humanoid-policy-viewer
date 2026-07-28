@@ -35,13 +35,16 @@ export default defineConfig({
     }),
   ],
   optimizeDeps: {
-    exclude: ['vuetify', 'onnxruntime-web'],
+    // Keep both MuJoCo WASM packages out of Vite pre-bundling. Policy mode
+    // remains on the legacy package while SysID replay uses @mujoco/mujoco.
+    exclude: ['vuetify', 'onnxruntime-web', 'mujoco-js', '@mujoco/mujoco'],
   },
   define: { 'process.env': {} },
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
+    dedupe: ['mujoco-js', '@mujoco/mujoco'],
     extensions: [
       '.js',
       '.json',
