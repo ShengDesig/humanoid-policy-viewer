@@ -38,6 +38,11 @@ Thumbs.db
 
 # Build files
 /build
+/artifacts
+
+# Local diagnostics
+/mujoco-runtime-diagnostic.txt
+/mujoco-runtime-diagnostic.md
 
 # Cache
 .cache
