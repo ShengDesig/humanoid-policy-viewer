@@ -196,6 +196,7 @@ export default {
 
         this.initStage = 'ready';
         this.state = 1;
+        await this.loadMotionFromQuery();
       } catch (error) {
         console.error(`Failed to initialize SysID replay at ${this.initStage}:`, error);
         this.state = -1;
@@ -205,6 +206,45 @@ export default {
     },
     reloadPage() {
       window.location.reload();
+    },
+    loadPayload(payload, sourceDescription = 'motion JSON') {
+      if (!this.controller) {
+        throw new Error('SysID replay controller is not ready');
+      }
+      this.pausePlayback();
+      const clip = this.controller.load(payload);
+      this.playback = { ...this.controller.playbackState() };
+      this.loadMessageType = 'success';
+      this.loadMessage = `Loaded ${clip.frameCount} frames, ${clip.durationS.toFixed(3)} seconds at ${clip.frameRate.toFixed(2)} Hz.`;
+      console.info(`Loaded SysID motion from ${sourceDescription}`);
+      return clip;
+    },
+    async loadMotionFromQuery() {
+      const params = new URLSearchParams(window.location.search);
+      const requestedPath = params.get('motion');
+      if (!requestedPath) {
+        return;
+      }
+
+      try {
+        const motionUrl = new URL(requestedPath, window.location.href);
+        if (motionUrl.origin !== window.location.origin) {
+          throw new Error('Bundled motion URL must use the same origin as the viewer');
+        }
+        const response = await fetch(motionUrl, { cache: 'no-store' });
+        if (!response.ok) {
+          throw new Error(`Failed to load bundled motion: HTTP ${response.status}`);
+        }
+        const payload = await response.json();
+        this.loadPayload(payload, motionUrl.pathname);
+        if (params.get('autoplay') === '1') {
+          requestAnimationFrame(() => this.startPlayback());
+        }
+      } catch (error) {
+        console.error('Failed to auto-load bundled SysID motion:', error);
+        this.loadMessageType = 'error';
+        this.loadMessage = error?.toString?.() ?? String(error);
+      }
     },
     async onMotionFile(files) {
       const fileList = Array.isArray(files)
@@ -218,14 +258,10 @@ export default {
         return;
       }
 
-      this.pausePlayback();
       try {
         const file = fileList[0];
         const payload = JSON.parse(await file.text());
-        const clip = this.controller.load(payload);
-        this.playback = { ...this.controller.playbackState() };
-        this.loadMessageType = 'success';
-        this.loadMessage = `Loaded ${clip.frameCount} frames, ${clip.durationS.toFixed(3)} seconds at ${clip.frameRate.toFixed(2)} Hz.`;
+        this.loadPayload(payload, file.name);
       } catch (error) {
         console.error('Failed to load SysID motion:', error);
         this.loadMessageType = 'error';
