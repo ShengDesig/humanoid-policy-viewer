@@ -82,10 +82,14 @@
     </v-card>
   </div>
 
-  <v-dialog :model-value="state === 0" persistent max-width="560px">
+  <v-dialog :model-value="state === 0" persistent max-width="640px">
     <v-card title="Loading G1 MuJoCo scene">
       <v-card-text>
-        <v-progress-linear indeterminate color="primary"></v-progress-linear>
+        <v-progress-linear
+          :indeterminate="initStage !== 'assets' || assetProgress.total === 0"
+          :model-value="assetProgressPercent"
+          color="primary"
+        ></v-progress-linear>
         <div class="mt-3">{{ loadingLabel }}</div>
       </v-card-text>
     </v-card>
@@ -108,9 +112,9 @@
 
 <script>
 import { MuJoCoDemo } from '@/simulation/main.js';
-import { downloadExampleScenesFolder } from '@/simulation/mujocoUtils.js';
 import { loadMujocoSingleton } from '@/simulation/mujocoSingleton.js';
 import { SysIDReplayController } from '@/simulation/sysidReplay.js';
+import { downloadSysIDSceneAssets } from '@/simulation/sysidAssetLoader.js';
 
 export default {
   name: 'SysIDReplayPage',
@@ -128,6 +132,11 @@ export default {
     playStartMs: 0,
     playStartFrame: 0,
     playbackSpeed: 1,
+    assetProgress: {
+      completed: 0,
+      total: 0,
+      currentFile: ''
+    },
     speedItems: [
       { title: '0.25×', value: 0.25 },
       { title: '0.5×', value: 0.5 },
@@ -153,12 +162,25 @@ export default {
       const metadata = this.playback.metadata ?? {};
       return metadata.source_series ?? metadata.source_path ?? 'exported motion JSON';
     },
+    assetProgressPercent() {
+      if (!this.assetProgress.total) {
+        return 0;
+      }
+      return Math.min(100, (this.assetProgress.completed / this.assetProgress.total) * 100);
+    },
     loadingLabel() {
+      if (this.initStage === 'assets' && this.assetProgress.total > 0) {
+        const current = this.assetProgress.currentFile
+          ? ` — ${this.assetProgress.currentFile}`
+          : '';
+        return `Loading G1 assets ${this.assetProgress.completed}/${this.assetProgress.total}${current}`;
+      }
+
       const labels = {
         starting: 'Preparing SysID replay.',
         wasm: 'Loading the singleton MuJoCo WebAssembly module.',
         demo: 'Creating the G1 viewer.',
-        assets: 'Loading G1 MJCF and mesh assets.',
+        assets: 'Reading the G1 scene asset manifest.',
         scene: 'Compiling the G1 MuJoCo scene.',
         controller: 'Preparing direct recorded-state playback.'
       };
@@ -181,7 +203,14 @@ export default {
         this.demo = new MuJoCoDemo(mujoco);
 
         this.initStage = 'assets';
-        await downloadExampleScenesFolder(mujoco);
+        this.assetProgress = { completed: 0, total: 0, currentFile: '' };
+        await downloadSysIDSceneAssets(mujoco, {
+          concurrency: 4,
+          timeoutMs: 60000,
+          onProgress: (progress) => {
+            this.assetProgress = { ...progress };
+          }
+        });
 
         this.initStage = 'scene';
         await this.demo.reloadScene('g1/g1.xml');
@@ -196,6 +225,7 @@ export default {
 
         this.initStage = 'ready';
         this.state = 1;
+        await this.loadMotionFromQuery();
       } catch (error) {
         console.error(`Failed to initialize SysID replay at ${this.initStage}:`, error);
         this.state = -1;
@@ -205,6 +235,45 @@ export default {
     },
     reloadPage() {
       window.location.reload();
+    },
+    loadPayload(payload, sourceDescription = 'motion JSON') {
+      if (!this.controller) {
+        throw new Error('SysID replay controller is not ready');
+      }
+      this.pausePlayback();
+      const clip = this.controller.load(payload);
+      this.playback = { ...this.controller.playbackState() };
+      this.loadMessageType = 'success';
+      this.loadMessage = `Loaded ${clip.frameCount} frames, ${clip.durationS.toFixed(3)} seconds at ${clip.frameRate.toFixed(2)} Hz.`;
+      console.info(`Loaded SysID motion from ${sourceDescription}`);
+      return clip;
+    },
+    async loadMotionFromQuery() {
+      const params = new URLSearchParams(window.location.search);
+      const requestedPath = params.get('motion');
+      if (!requestedPath) {
+        return;
+      }
+
+      try {
+        const motionUrl = new URL(requestedPath, window.location.href);
+        if (motionUrl.origin !== window.location.origin) {
+          throw new Error('Bundled motion URL must use the same origin as the viewer');
+        }
+        const response = await fetch(motionUrl, { cache: 'no-store' });
+        if (!response.ok) {
+          throw new Error(`Failed to load bundled motion: HTTP ${response.status}`);
+        }
+        const payload = await response.json();
+        this.loadPayload(payload, motionUrl.pathname);
+        if (params.get('autoplay') === '1') {
+          requestAnimationFrame(() => this.startPlayback());
+        }
+      } catch (error) {
+        console.error('Failed to auto-load bundled SysID motion:', error);
+        this.loadMessageType = 'error';
+        this.loadMessage = error?.toString?.() ?? String(error);
+      }
     },
     async onMotionFile(files) {
       const fileList = Array.isArray(files)
@@ -218,14 +287,10 @@ export default {
         return;
       }
 
-      this.pausePlayback();
       try {
         const file = fileList[0];
         const payload = JSON.parse(await file.text());
-        const clip = this.controller.load(payload);
-        this.playback = { ...this.controller.playbackState() };
-        this.loadMessageType = 'success';
-        this.loadMessage = `Loaded ${clip.frameCount} frames, ${clip.durationS.toFixed(3)} seconds at ${clip.frameRate.toFixed(2)} Hz.`;
+        this.loadPayload(payload, file.name);
       } catch (error) {
         console.error('Failed to load SysID motion:', error);
         this.loadMessageType = 'error';
