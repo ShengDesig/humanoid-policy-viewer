@@ -25,6 +25,13 @@ const LEGACY_NUMBER_FIELDS = [
   'ten_wrapadr', 'ten_wrapnum'
 ];
 
+// The canonical bindings currently expose this model field as
+// emscripten::memory_view<bool>.  Accessing its generated getter in JavaScript
+// throws `_emval_take_value has unknown type ... memory_view<bool>`.  The
+// renderer already has a safe fallback when the field is absent/falsy, so
+// shadow the unsupported getter without reading it.
+const UNSUPPORTED_BOOL_VIEW_FIELDS = ['light_castshadow'];
+
 function readUtf8File(fs, path) {
   const value = fs.readFile(path, { encoding: 'utf8' });
   if (typeof value === 'string') {
@@ -50,6 +57,24 @@ function numberCompatibleValue(value) {
   return value;
 }
 
+function maskUnsupportedMemoryViews(model) {
+  for (const field of UNSUPPORTED_BOOL_VIEW_FIELDS) {
+    try {
+      Object.defineProperty(model, field, {
+        configurable: true,
+        enumerable: false,
+        writable: false,
+        value: null
+      });
+    } catch (error) {
+      throw new Error(
+        `Unable to mask unsupported MjModel.${field} memory view: ${error}`
+      );
+    }
+  }
+  return model;
+}
+
 /**
  * The canonical MuJoCo bindings expose address-sized C fields as BigInt values
  * on some browser/OS combinations.  The upstream viewer predates those
@@ -59,6 +84,8 @@ function numberCompatibleValue(value) {
  * for MjData construction and MuJoCo C API calls.
  */
 function installLegacyModelNumberViews(model) {
+  maskUnsupportedMemoryViews(model);
+
   for (const field of LEGACY_NUMBER_FIELDS) {
     let original;
     try {
