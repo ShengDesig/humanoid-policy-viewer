@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite --host",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "package:windows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/package-windows-portable.ps1"
   },
   "dependencies": {
     "@fontsource/roboto": "5.2.5",
